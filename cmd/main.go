@@ -46,6 +46,12 @@ func main() {
 	// Inicialização das camadas
 	repo := repository.NewUserRepository(db)
 	service := service.NewUserService(repo, jwtSecret)
+
+	// Inicializa tabelas de RBAC, Departamentos e seeds de dados automaticamente
+	if err := service.InitSchema(); err != nil {
+		log.Printf("Aviso ao inicializar schema RBAC: %v\n", err)
+	}
+
 	handler := handler.NewUserHandler(service)
 
 	// Configuração do servidor
@@ -54,17 +60,57 @@ func main() {
 	// Middleware de autenticação JWT
 	jwtMiddleware := middleware.AuthMiddleware(jwtSecret)
 
-	// Rotas públicas (não precisam de token)
-	server.POST("/auth/register", handler.CreateUser)
-	server.POST("/auth/login", handler.Login)
+	// 1. Rotas Públicas
+	server.POST("/auth/register", handler.CreateUser) // Cadastro de cliente
+	server.POST("/auth/login", handler.Login)         // Login geral
 
-	// Rotas protegidas (exigem que o usuário esteja logado via Bearer Token)
-	protected := server.Group("/api", jwtMiddleware)
+	// 2. Rotas Protegidas
+	api := server.Group("/api", jwtMiddleware)
 	{
-		protected.GET("/users", handler.ListUsers)
-		protected.GET("/users/:id", handler.GetUser)
-		protected.PUT("/users/:id", handler.UpdateUser)
-		protected.DELETE("/users/:id", handler.DeleteUser)
+		// Auto-gestão do perfil (Qualquer usuário logado)
+		api.GET("/me", middleware.RequirePermission("users:self:read"), handler.GetProfile)
+		api.PATCH("/users/:id/password", middleware.RequirePermission("users:self:write"), handler.UpdatePassword)
+		api.DELETE("/me", middleware.RequirePermission("users:self:delete"), handler.DeleteOwnAccount)
+
+		// Gestão Departamental (Gerentes gerenciam colaboradores da sua própria área)
+		dept := api.Group("/department")
+		{
+			dept.GET("/users", middleware.RequirePermission("dept_users:read"), handler.ListDepartmentUsers)
+			dept.POST("/users", middleware.RequirePermission("dept_users:create"), handler.CreateStaff)
+			dept.PATCH("/users/:id", middleware.RequirePermission("dept_users:write"), handler.UpdateUser)
+			dept.DELETE("/users/:id", middleware.RequirePermission("dept_users:delete"), handler.DeleteUser)
+		}
+
+		// Gestão Global do Sistema (Exclusivo Administrador Geral)
+		admin := api.Group("/admin")
+		{
+			admin.GET("/users", middleware.RequirePermission("users:read_all"), handler.ListUsers)
+			admin.GET("/users/:id", middleware.RequirePermission("users:read_all"), handler.GetUser)
+			admin.PATCH("/users/:id", middleware.RequirePermission("users:write_all"), handler.UpdateUser)
+			admin.DELETE("/users/:id", middleware.RequirePermission("users:delete_all"), handler.DeleteUser)
+		}
+
+		// Módulo de Estoque e Produtos
+		stock := api.Group("/stock", middleware.RequireDepartment("stock"))
+		{
+			stock.GET("/products", middleware.RequirePermission("products:read"), func(c *gin.Context) {
+				c.JSON(200, gin.H{"message": "Listagem de produtos (estoque)"})
+			})
+			stock.POST("/products", middleware.RequirePermission("products:create"), func(c *gin.Context) {
+				c.JSON(200, gin.H{"message": "Cadastro de produto realizado"})
+			})
+		}
+
+		// Módulo Financeiro
+		finance := api.Group("/finance", middleware.RequireDepartment("finance"))
+		{
+			finance.GET("/costs", middleware.RequirePermission("finance:read"), func(c *gin.Context) {
+				c.JSON(200, gin.H{"message": "Relatório de custos do financeiro"})
+			})
+			finance.POST("/entries", middleware.RequirePermission("finance:write"), func(c *gin.Context) {
+				c.JSON(200, gin.H{"message": "Lançamento financeiro registrado"})
+			})
+		}
 	}
 
 	// Inicialização do servidor
