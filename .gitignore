@@ -1,0 +1,14 @@
+﻿# Air
+tmp/
+build-errors.log
+
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+
+# Environment variables
+.env
